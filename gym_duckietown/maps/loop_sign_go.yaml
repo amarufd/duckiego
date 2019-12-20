@@ -1,0 +1,28 @@
+# This is a closed loop (no intersections) with a few obstacles directly
+# on the road, which have to be avoided.
+
+tiles:
+- [floor  , floor       , floor     , floor     , floor         , floor     , floor         , floor  ]
+- [floor  , curve_left/W, straight/W, straight/W, straight/W    , straight/W, curve_left/N  , floor  ]
+- [floor  , straight/S  , floor     , floor     , floor         , floor     , straight/N    , floor  ]
+- [floor  , straight/S  , floor     , floor     , floor         , floor     , straight/N    , floor  ]
+- [floor  , straight/S  , floor     , floor     , curve_right/N , straight/E, curve_left/E  , floor  ]
+- [floor  , curve_left/S, straight/E, straight/E, curve_left/E  , floor     , floor         , floor  ]
+- [floor  , floor       , floor     , floor     , floor         , floor     , floor         , floor  ]
+
+# NOTE: obstacles cannot be optional, because they will change for
+# every episode, and this will interfere with imitation learning
+start_tile: [2, 1]
+
+objects:
+
+- kind: sign_go
+  pos: [1.25, 2.5]
+  rotate: 270
+  height: 0.12
+  static: False
+  revert: True
+
+
+
+tile_size: 0.585
