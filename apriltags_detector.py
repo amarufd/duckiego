@@ -28,7 +28,7 @@ import transformations as tf
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env-name', default='Duckietown')
-parser.add_argument('--map-name', default='udem2')
+parser.add_argument('--map-name', default='udem1')
 parser.add_argument('--distortion', default=False, action='store_true')
 parser.add_argument('--draw-curve', action='store_true', help='draw the lane following curve')
 parser.add_argument('--draw-bbox', action='store_true', help='draw collision detection bounding boxes')
@@ -50,7 +50,7 @@ if args.env_name and args.env_name.find('Duckietown') != -1:
 else:
     env = gym.make(args.env_name)
 
-env.reset()
+#env.reset()
 env.render()
 
 @env.unwrapped.window.event
@@ -107,10 +107,12 @@ def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
         6, 7,
         7, 4
     ]).reshape(-1, 2)
-        
+
     fx, fy, cx, cy = camera_params
 
+    # matriz homogenea
     K = np.array([fx, 0, cx, 0, fy, cy, 0, 0, 1]).reshape(3, 3)
+    print("matriz homogenea ", K)
 
     rvec, _ = cv2.Rodrigues(pose[:3,:3])
     tvec = pose[:3, 3]
@@ -123,25 +125,24 @@ def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
     for i, j in edges:
         cv2.line(overlay, ipoints[i], ipoints[j], (0, 255, 0), 1, 16)
 
-def global_pose(matrix,x_ob,y_ob,angle):
-    #obtiene el angulo del tag con respecto al mapa
-    q1 = math.atan2(y_ob,x_ob)
-    # invierte el angulo del tag segun el plano del mapa
-    angle = -angle
-    # Calcula la distancia del robot al tag
-    z = dist(matrix)
-    # Calcula la distancia del tag al mapa
-    d = math.sqrt(x_ob**2 + y_ob**2)
-    # Calcula el angulo del robot c/r a q1
-    q2 = angle2(q1,angle,tf.euler_from_matrix(matrix))
-    R1 = tf.rotation_matrix(q1,[0,0,1])
-    T1 = tf.translation_matrix([d,0,0])
-    R2 = tf.rotation_matrix(q2,[0,0,1])
-    T2 = tf.translation_matrix([z,0,0])
-    result = R1.dot(T1.dot(R2.dot(T2.dot([0,0,0,1]))))
-    
-    return result
-    
+def global_pose(matrix,x_ob,y_ob,angle): # matrix es la pose del apriltag x_ob e y_ob es el x e y del apriltag
+    tag_size = 0.18
+    tile_size = 0.585
+
+    T_a = tf.translation_matrix([
+        -x_ob, -tag_size*3/4, y_ob]) # esto ya viene multiplicado por el tile_size
+    R_a = tf.euler_matrix(0,angle,0)
+
+    T_m_a = tf.concatenate_matrices(T_a, R_a)
+
+    # pose tag con respecto al robot
+    T_r_a = np.dot(matrix, tf.euler_matrix(0, np.pi, 0))
+    # pose tag con respecto al mapa
+    T_a_r = np.linalg.inv(T_r_a) # T_r_a-1
+    T_m_r = np.dot(T_m_a, T_a_r)
+
+    return T_m_r
+
 
 def angle2(q,angle,euler):
     return q-(angle-yaw(euler))
@@ -189,23 +190,24 @@ def update(dt):
     detections, dimg = detector.detect(gray, return_image=True)
     camera = [305.57, 308.83, 303.07, 231.88]
 
+
     pose = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
-    robot_pose = [0.0, 0.0]
+    robot_pose = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
     for detection in detections:
 
         pose, e0, e1 = detector.detection_pose(detection, camera, 0.18 / 2)
         if not np.isnan(pose[0][0]):
             _draw_pose(cv_img,
                        camera,
-                       0.18/ 2 *0.585,
+                       0.18/ 2,
                        pose)
-            
+        # aqui si tiene que ir el 0.585
         robot_pose = global_pose(pose, 2.08*0.585, 4.05*0.585, math.pi)
-        
-    label = 'detections = %d, dist = %.2f, pos = (%.2f, %.2f)' % (len(detections), pose[2][3], robot_pose[0], robot_pose[1])
-    
-    cv2.imshow('win', cv_img)
-    cv2.waitKey(5)
+        print(" ROBOT POSE ", robot_pose)
+    label = 'detections = %d, dist = %.2f, pos = (%.2f, %.2f)' % (len(detections), pose[2][3], robot_pose[0][3], robot_pose[2][3])
+
+    # cv2.imshow('win', cv_img)
+    # cv2.waitKey(5)
 
     #if done:
     #   print('done!')

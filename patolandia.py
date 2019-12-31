@@ -234,23 +234,22 @@ def dibujaPose(overlay, camera_params, tag_size, pose, z_sign=1):
         cv2.line(overlay, ipoints[i], ipoints[j], (0, 255, 0), 1, 16)
 
 def poseGlobal(matrix,x_ob,y_ob,angulo):
-    #obtiene el angulo del tag con respecto al mapa
-    q1 = math.atan2(y_ob,x_ob)
-    # invierte el angulo del tag segun el plano del mapa
-    angulo = -angulo
-    # Calcula la distancia del robot al tag
-    z = dist(matrix)
-    # Calcula la distancia del tag al mapa
-    d = math.sqrt(x_ob**2 + y_ob**2)
-    # Calcula el angulo del robot c/r a q1
-    q2 = angulo2(q1,angulo,tf.euler_from_matrix(matrix))
-    R1 = tf.rotation_matrix(q1,[0,0,1])
-    T1 = tf.translation_matrix([d,0,0])
-    R2 = tf.rotation_matrix(q2,[0,0,1])
-    T2 = tf.translation_matrix([z,0,0])
-    result = R1.dot(T1.dot(R2.dot(T2.dot([0,0,0,1]))))
-    
-    return result
+    tag_size = 0.18
+    tile_size = 0.585
+
+    T_a = tf.translation_matrix([
+        -x_ob, -tag_size*3/4, y_ob]) # esto ya viene multiplicado por el tile_size
+    R_a = tf.euler_matrix(0,angulo,0)
+
+    T_m_a = tf.concatenate_matrices(T_a, R_a)
+
+    # pose tag con respecto al robot
+    T_r_a = np.dot(matrix, tf.euler_matrix(0, np.pi, 0))
+    # pose tag con respecto al mapa
+    T_a_r = np.linalg.inv(T_r_a) # T_r_a-1
+    T_m_r = np.dot(T_m_a, T_a_r)
+
+    return T_m_r
 
 def angulo2(q,angulo,euler):
     return q-(angulo-yaw(euler))
