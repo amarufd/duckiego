@@ -29,7 +29,7 @@ import LineRoadsDetection as LR
 # from experiments.utils import save_img
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--env-name', default=None) #Ingresamos el ambiente
+parser.add_argument('--env-name', default='Duckietown-udem1-v0') #Ingresamos el ambiente
 parser.add_argument('--map-name', default='udem1') #mapa
 parser.add_argument('--distortion', default=False, action='store_true')
 parser.add_argument('--draw-curve', action='store_true', help='draw the lane following curve')
