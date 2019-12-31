@@ -24,7 +24,163 @@ from apriltag import Detector
 import transformations as tf
 
 #calculo steering
-import LineRoadsDetection as LR
+#import LineRoadsDetection as LR
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+def make_points(line, altura, ancho, altura_y, offset_y):
+    inclinacion, interseccion = line
+    y1=int(altura/2+altura_y+offset_y) #abajo
+    y2=int(altura/2-altura_y+offset_y) #arriba
+
+    # encuadrando las coordenadas con el cuadro
+    x1 = max(-ancho, min(2 * ancho, int((y1 - interseccion) / inclinacion)))
+    x2 = max(-ancho, min(2 * ancho, int((y2 - interseccion) / inclinacion)))
+    return [[x1, y1, x2, y2]]
+
+def calcula_direccion(cv_img, erode_it, dilate_it, altura_y, offset_y, boundary, lower_yellow, upper_yellow, lower_white, upper_white):
+    altura, ancho, _= cv_img.shape
+    # Se transforma la imagen a HSV
+    hsv_img=cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+    # Segmentacion para los colores de borde de la calle (blanco y amarillo)
+    mascara_amarilla = cv2.inRange(hsv_img, lower_yellow, upper_yellow)
+    mascara_blanca =  cv2.inRange(hsv_img, lower_white, upper_white)
+
+    #Se unen ambas máscaras, así se tiene una segmentación de blancos y amarillos
+    mascara=cv2.bitwise_or(mascara_blanca,mascara_amarilla)
+    #Inicializamos la detección
+    lds=DETECTION(cv_img, altura_y, offset_y, boundary)
+    #Asignamos un espacio de interés de la máscara
+    mascara=lds.region_evaluar(mascara)
+    #Realizamos erosión y dilatación
+    kernel = np.ones((5,5),np.uint8)
+    erosion = cv2.erode(mascara, kernel, iterations=erode_it)
+    dilated = cv2.dilate(erosion, kernel, iterations=dilate_it)
+    #obtenemos una imágen ajustada a la máscara
+    image_out = cv2.bitwise_and(cv_img, cv_img, mask=dilated) # Aplicar mascara
+
+    #Se detectan los bordes con el método Canny de OPENCV
+    esquinas=cv2.Canny(mascara,200,400)
+
+    #Se usa el procedimiento segmentos_lineas para detectar las líneas en la imágen
+    segmentos_lineas=lds.detectar_segmentos_lineas(esquinas)
+    #Se calcula una línea que es el resultado de un promedio ponderado de todas las líneas
+    #detectadas
+    lane_lines = lds.promedio_interseccion_rectas(segmentos_lineas)
+    #Como output se muestra la imágen
+    lane_lines_image = lds.display_lines(lane_lines)
+
+    if len(lane_lines)==0:
+        x_offset=0
+        y_offset = int(altura/2-altura_y+offset_y)
+    elif len(lane_lines)==1:
+        x1, _, x2, _ = lane_lines[0][0]
+        x_offset = x2 - x1
+        y_offset = int(altura/2-altura_y+offset_y)
+    elif len(lane_lines)==2:
+        _, _, left_x2, _=lane_lines[0][0]
+        _, _, right_x2, _=lane_lines[1][0]
+        mid=int(ancho/2)
+        x_offset=(left_x2+right_x2)/2-mid
+        y_offset=int(altura/2-altura_y+offset_y)
+
+
+    direccion_angulo = math.atan(x_offset / y_offset) #radianes
+    if x_offset==0:
+        direccion_angulo=+math.pi*1/12
+
+    cv2.imshow("maskara", mascara)
+    cv2.imshow("image salida",image_out)
+    cv2.imshow("lane lines", lane_lines_image)
+
+    return direccion_angulo
+
+
+class DETECTION():
+    def __init__(self, frame, altura_y, offset_y, boundary):
+        self.frame=frame
+        self.altura, self.ancho, _= frame.shape
+        self.altura_y=altura_y
+        self.offset_y=offset_y
+        self.boundary=boundary
+
+    def region_evaluar(self, mascara):
+        region_a_recortar = [[0,int(self.altura/2+self.altura_y+self.offset_y)],[0,int(self.altura)],[int(self.ancho),int(self.altura)],[int(self.ancho),int(self.altura/2+self.altura_y+self.offset_y)]]
+        poligono_a_recortar = np.array([region_a_recortar],dtype=np.int32)
+        cv2.fillPoly(mascara,poligono_a_recortar,0)
+        region_a_recortar = [[0,int(self.altura/2-self.altura_y+self.offset_y)],[0,0],[int(self.ancho),0],[int(self.ancho),int(self.altura/2-self.altura_y+self.offset_y)]]
+        poligono_a_recortar = np.array([region_a_recortar],dtype=np.int32)
+        cv2.fillPoly(mascara,poligono_a_recortar,0)
+        return mascara
+
+    def detectar_segmentos_lineas(self, esquinas):
+
+        rho = 1
+        angulo = np.pi / 180
+        lim_menor = 20
+        segmentos_lineas = cv2.HoughLinesP(esquinas, rho, angulo, lim_menor, 
+                                        np.array([]), minLineLength=8, maxLineGap=10)
+
+        return segmentos_lineas
+
+    def promedio_interseccion_rectas(self, segmentos_lineas):
+        lane_lines = []
+        if segmentos_lineas is None:
+            return lane_lines
+
+        left_fit = []
+        left_weights=[]
+        right_fit = []
+        right_weights=[]
+
+        left_region_boundary = self.ancho * (1 - self.boundary)  # la linea de la izquierda está por dentro de la variable boundary por la izquierda
+        right_region_boundary = self.ancho * self.boundary # la linea de la derecha está por dentro de la variable boundary por la derecha
+
+        for line_segment in segmentos_lineas:
+            for x1, y1, x2, y2 in line_segment:
+                if x1 == x2:
+                    #ignora lineas verticales
+                    continue
+                ajuste = np.polyfit((x1, x2), (y1, y2), 1)
+                inclinacion = ajuste[0]
+                interseccion = ajuste[1]
+                length=np.sqrt((y2-y1)**2+(x2-x1)**2)
+                if inclinacion < 0:
+                    if x1 < left_region_boundary and x2 < left_region_boundary:
+                        left_fit.append((inclinacion, interseccion))
+                        if abs(inclinacion) >0.09: #se corrige el problema de las líneas horizontales (amarilla segmentada)
+                            left_weights.append((length))
+                        else:
+                            left_weights.append((1)) #cuando es horizontal el peso es 1
+                else:
+                    if x1 > right_region_boundary and x2 > right_region_boundary:
+                        right_fit.append((inclinacion, interseccion))
+                        if abs(inclinacion) >0.09:
+                            right_weights.append((length))
+                        else:
+                            right_weights.append((1))
+
+        if len(left_fit) > 0:
+            left_fit_average = np.average(left_fit,weights=left_weights, axis=0)
+            lane_lines.append(make_points(left_fit_average, self.altura, self.ancho, self.altura_y, self.offset_y))
+
+        if len(right_fit) > 0:
+            right_fit_average = np.average(right_fit,weights=right_weights, axis=0)
+            lane_lines.append(make_points(right_fit_average, self.altura, self.ancho, self.altura_y, self.offset_y))
+
+        return lane_lines
+    
+
+    def display_lines(self, lines, line_color=(0, 255, 0), line_ancho=2):
+        line_image = np.zeros_like(self.frame)
+        if lines is not None:
+            for line in lines:
+                for x1, y1, x2, y2 in line:
+                    cv2.line(line_image, (x1, y1), (x2, y2), line_color, line_ancho)
+        line_image = cv2.addWeighted(self.frame, 0.8, line_image, 1, 1)
+        return line_image
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 # from experiments.utils import save_img
 
@@ -69,7 +225,7 @@ def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
         -1,  1, -2*z_sign,
     ]).reshape(-1, 1, 3) * 0.5*tag_size
 
-    edges = np.array([
+    esquinas = np.array([
         0, 1,
         1, 2,
         2, 3,
@@ -96,20 +252,20 @@ def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
     ipoints, _ = cv2.projectPoints(opoints, rvec, tvec, K, dcoeffs)
     ipoints = np.round(ipoints).astype(int)
     ipoints = [tuple(pt) for pt in ipoints.reshape(-1, 2)]
-    for i, j in edges:
+    for i, j in esquinas:
         cv2.line(overlay, ipoints[i], ipoints[j], (0, 255, 0), 1, 16)
 
-def global_pose(matrix,x_ob,y_ob,angle):
+def global_pose(matrix,x_ob,y_ob,angulo):
     #obtiene el angulo del tag con respecto al mapa
     q1 = math.atan2(y_ob,x_ob)
     # invierte el angulo del tag segun el plano del mapa
-    angle = -angle
+    angulo = -angulo
     # Calcula la distancia del robot al tag
     z = dist(matrix)
     # Calcula la distancia del tag al mapa
     d = math.sqrt(x_ob**2 + y_ob**2)
     # Calcula el angulo del robot c/r a q1
-    q2 = angle2(q1,angle,tf.euler_from_matrix(matrix))
+    q2 = angulo2(q1,angulo,tf.euler_from_matrix(matrix))
     R1 = tf.rotation_matrix(q1,[0,0,1])
     T1 = tf.translation_matrix([d,0,0])
     R2 = tf.rotation_matrix(q2,[0,0,1])
@@ -118,24 +274,24 @@ def global_pose(matrix,x_ob,y_ob,angle):
     
     return result
 
-def angle2(q,angle,euler):
-    return q-(angle-yaw(euler))
+def angulo2(q,angulo,euler):
+    return q-(angulo-yaw(euler))
 
 def l1(x,y):
     return math.sqrt(x**2,y**2)
 
-def yaw(euler_angles):
-    return euler_angles[2]
+def yaw(euler_angulos):
+    return euler_angulos[2]
 
 def dist(matrix):
     return np.linalg.norm([matrix[0][3],matrix[1][3],matrix[2][3]])
-steering_angle=-math.pi
+direccion_angulo=-math.pi
 while True:
 
 
     lane_pose = env.get_lane_pos2(env.cur_pos, env.cur_angle)
     distance_to_road_center = lane_pose.dist
-    angle_from_straight_in_rads = lane_pose.angle_rad
+    angulo_from_straight_in_rads = lane_pose.angle_rad
 
     ###### Start changing the code here.
     # TODO: Decide how to calculate the speed and direction.
@@ -147,12 +303,12 @@ while True:
     
     speed = 0.2 # TODO: You should overwrite this value
     
-    # angle of the steering wheel, which corresponds to the angular velocity in rad/s
-    steering = k_p*distance_to_road_center + k_d*angle_from_straight_in_rads # TODO: You should overwrite this value
+    # angulo of the steering wheel, which corresponds to the angular velocity in rad/s
+    steering = k_p*distance_to_road_center + k_d*angulo_from_straight_in_rads # TODO: You should overwrite this value
     print("stering real : \n"+str(steering))
     ###### No need to edit code below.
     
-    obs, reward, done, info = env.step([speed, steering_angle])
+    obs, reward, done, info = env.step([speed, direccion_angulo])
 
     ### line detector
     original = Image.fromarray(obs)
@@ -161,7 +317,7 @@ while True:
 
     erode_it=1
     dilate_it=1
-    height_y=75
+    altura_y=75
     offset_y=150
     boundary=6/7
     
@@ -172,8 +328,8 @@ while True:
     lower_white = np.array([0, 0, 75]) #V más grande menos gris
     upper_white = np.array([180, 5, 255])
 
-    steering_angle = -LR.compute_steering(cv_img, erode_it, dilate_it, height_y, offset_y, boundary, lower_yellow, upper_yellow, lower_white, upper_white)*3/4
-    print("stering CV : \n"+str(steering_angle))
+    direccion_angulo = -calcula_direccion(cv_img, erode_it, dilate_it, altura_y, offset_y, boundary, lower_yellow, upper_yellow, lower_white, upper_white)*3/4
+    print("stering CV : \n"+str(direccion_angulo))
     # line detector end
 
 
