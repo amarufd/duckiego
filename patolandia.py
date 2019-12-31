@@ -140,7 +140,7 @@ def puntos(line, altura, ancho, altura_y, correccion_y):
     x2 = max(-ancho, min(2 * ancho, int((y2 - interseccion) / inclinacion)))
     return [[x1, y1, x2, y2]]
 
-def calcula_direccion(cv_img, erode_it, dilate_it, altura_y, correccion_y, limites, amarillo_claro, amarillo_oscuro, blanco_claro, blanco_oscuro):
+def calculaDireccion(cv_img, erode_it, dilate_it, altura_y, correccion_y, limites, amarillo_claro, amarillo_oscuro, blanco_claro, blanco_oscuro):
     
     altura, ancho, _= cv_img.shape
     imagen_hsv=cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
@@ -190,7 +190,7 @@ def calcula_direccion(cv_img, erode_it, dilate_it, altura_y, correccion_y, limit
     return direccion_angulo
 
 
-def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
+def dibujaPose(overlay, camera_params, tag_size, pose, z_sign=1):
 
     opoints = np.array([
         -1, -1, 0,
@@ -233,7 +233,7 @@ def _draw_pose(overlay, camera_params, tag_size, pose, z_sign=1):
     for i, j in esquinas:
         cv2.line(overlay, ipoints[i], ipoints[j], (0, 255, 0), 1, 16)
 
-def global_pose(matrix,x_ob,y_ob,angulo):
+def poseGlobal(matrix,x_ob,y_ob,angulo):
     #obtiene el angulo del tag con respecto al mapa
     q1 = math.atan2(y_ob,x_ob)
     # invierte el angulo del tag segun el plano del mapa
@@ -264,7 +264,14 @@ def yaw(euler_angulos):
 def dist(matrix):
     return np.linalg.norm([matrix[0][3],matrix[1][3],matrix[2][3]])
 direccion_angulo=-math.pi
+nro_iter = 0
+
+# se define si se sigue al apriltag o no
+seguir_april = True
+dist_april = 1
+
 while True:
+    nro_iter = nro_iter + 1
 
 
     pose_del_pato = env.get_lane_pos2(env.cur_pos, env.cur_angle)
@@ -277,12 +284,12 @@ while True:
 
     # angulo del volante, que corresponde a la velocidad angular en rad/s
     direccion = k_p*distancia_de_manejo + k_d*angulo_recto
-    print("stering real : \n"+str(direccion))
 
     obs, reward, done, info = env.step([speed, direccion_angulo])
 
-    ### detectar lineas
+    # Correccion de la imagen externa del pato
     original = Image.fromarray(obs)
+    original = np.ascontiguousarray(np.flip(original, axis=0))
     cv_img = cv2.cvtColor(np.array(original), cv2.COLOR_RGB2BGR)
     imagen_hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
 
@@ -296,18 +303,17 @@ while True:
     amarillo_claro = np.array([18, 41, 133])
     amarillo_oscuro = np.array([30, 255, 255])
     #Definición del rango de blancos 
-    blanco_claro = np.array([0, 0, 75]) #V más grande menos gris
+    blanco_claro = np.array([0, 0, 75])
     blanco_oscuro = np.array([180, 5, 255])
 
-    direccion_angulo = -calcula_direccion(cv_img, erode_it, dilate_it, altura_y, correccion_y, limites, amarillo_claro, amarillo_oscuro, blanco_claro, blanco_oscuro)*3/4
-    print("stering CV : \n"+str(direccion_angulo))
-    # line detector end
+    direccion_angulo = -calculaDireccion(cv_img, erode_it, dilate_it, altura_y, correccion_y, limites, amarillo_claro, amarillo_oscuro, blanco_claro, blanco_oscuro)*3/4
+    action=np.array([0,0])
 
+    rueda_izq = (+0.40*(math.cos(direccion_angulo)+math.sin(direccion_angulo))) * dist_april
+    rueda_der = (-0.42*(math.cos(direccion_angulo)-math.sin(direccion_angulo))) * dist_april
 
-    ### apriltags detector
-    label = ""
-    
-    
+    if nro_iter%2==0:
+        action = speed*np.array([rueda_izq, rueda_der])
 
     detector = Detector()
     gray = cv2.cvtColor(np.array(original), cv2.COLOR_RGB2GRAY)
@@ -317,25 +323,30 @@ while True:
     pose = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
     robot_pose = [0.0, 0.0]
     for detection in detections:
-        #
-        pose, e0, e1 = detector.detection_pose(detection, camera, 0.18 / 2 *0.585) #malo borrar división
+        pose, e0, e1 = detector.detection_pose(detection, camera, 0.18 / 2 )
         if not np.isnan(pose[0][0]):
-            _draw_pose(cv_img,
+            dibujaPose(cv_img,
                        camera,
                        0.18/ 2 *0.585,
                        pose)
             
-        robot_pose = global_pose(pose, 2.08*0.585, 4.05*0.585, math.pi/2) #no es pi/2 es pi# está malaS
+        robot_pose = poseGlobal(pose, 2.08*0.585, 4.05*0.585, math.pi)
         
+    ### apriltags detector
+    label = ""
     label = 'detections = %d, dist = %.2f, pos = (%.2f, %.2f)' % (len(detections), pose[2][3], robot_pose[0], robot_pose[1])
+
+    if seguir_april :
+        if pose[2][3] < 3.75 :
+            dist_april = 0
+        else : 
+            dist_april = 1
+
+
     
     cv2.imshow('win', cv_img)
     cv2.waitKey(5)
 
-    #if done:
-    #   print('done!')
-    #    env.reset()
-    #    env.render()
     extra_label = pyglet.text.Label(
         font_name="Arial",
         font_size=14,
@@ -345,15 +356,8 @@ while True:
     env.render(mode="top_down")
     extra_label.text = label
     extra_label.draw()
-    #Hasta acá
     total_reward += reward
     
-    #print('Steps = %s, Timestep Reward=%.3f, Total Reward=%.3f' % (env.step_count, reward, total_reward))
-
-    #env.render()
-
     if done:
         if reward < 0:
             print('*** CRASHED ***')
-        #print ('Final Reward = %.3f' % total_reward)
-        #break
