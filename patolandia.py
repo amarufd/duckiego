@@ -23,7 +23,7 @@ import math
 from apriltag import Detector
 import transformations as tf
 
-#calculo steering
+#calculo direccion
 #import LineRoadsDetection as LR
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -49,7 +49,7 @@ def calcula_direccion(cv_img, erode_it, dilate_it, altura_y, offset_y, boundary,
     #Se unen ambas máscaras, así se tiene una segmentación de blancos y amarillos
     mascara=cv2.bitwise_or(mascara_blanca,mascara_amarilla)
     #Inicializamos la detección
-    lds=DETECTION(cv_img, altura_y, offset_y, boundary)
+    lds=DeteccionLineas(cv_img, altura_y, offset_y, boundary)
     #Asignamos un espacio de interés de la máscara
     mascara=lds.region_evaluar(mascara)
     #Realizamos erosión y dilatación
@@ -96,14 +96,15 @@ def calcula_direccion(cv_img, erode_it, dilate_it, altura_y, offset_y, boundary,
     return direccion_angulo
 
 
-class DETECTION():
+class DeteccionLineas():
     def __init__(self, frame, altura_y, offset_y, boundary):
         self.frame=frame
         self.altura, self.ancho, _= frame.shape
         self.altura_y=altura_y
         self.offset_y=offset_y
-        self.boundary=boundary
+        self.limite=boundary
 
+    # Regio que donde se evaluan las lineas que se seguiran
     def region_evaluar(self, mascara):
         region_a_recortar = [[0,int(self.altura/2+self.altura_y+self.offset_y)],[0,int(self.altura)],[int(self.ancho),int(self.altura)],[int(self.ancho),int(self.altura/2+self.altura_y+self.offset_y)]]
         poligono_a_recortar = np.array([region_a_recortar],dtype=np.int32)
@@ -113,28 +114,28 @@ class DETECTION():
         cv2.fillPoly(mascara,poligono_a_recortar,0)
         return mascara
 
+    # Deteccion de los segmentos que ayudaran a la conduccion del pato por el centro
     def detectar_segmentos_lineas(self, esquinas):
-
         rho = 1
         angulo = np.pi / 180
         lim_menor = 20
         segmentos_lineas = cv2.HoughLinesP(esquinas, rho, angulo, lim_menor, 
                                         np.array([]), minLineLength=8, maxLineGap=10)
-
         return segmentos_lineas
 
+    # Calcula el promedio de la interseccion de las rectas para el manejo del pato
     def promedio_interseccion_rectas(self, segmentos_lineas):
-        lane_lines = []
+        lineas_seguir = []
         if segmentos_lineas is None:
-            return lane_lines
+            return lineas_seguir
 
-        left_fit = []
-        left_weights=[]
-        right_fit = []
-        right_weights=[]
+        ajuste_izq = []
+        ancho_izq=[]
+        ajuste_der = []
+        ancho_der=[]
 
-        left_region_boundary = self.ancho * (1 - self.boundary)  # la linea de la izquierda está por dentro de la variable boundary por la izquierda
-        right_region_boundary = self.ancho * self.boundary # la linea de la derecha está por dentro de la variable boundary por la derecha
+        limite_izq = self.ancho * (1 - self.limite)  # la linea de la izquierda está por dentro de la variable boundary por la izquierda
+        limite_der = self.ancho * self.limite # la linea de la derecha está por dentro de la variable boundary por la derecha
 
         for line_segment in segmentos_lineas:
             for x1, y1, x2, y2 in line_segment:
@@ -146,29 +147,29 @@ class DETECTION():
                 interseccion = ajuste[1]
                 length=np.sqrt((y2-y1)**2+(x2-x1)**2)
                 if inclinacion < 0:
-                    if x1 < left_region_boundary and x2 < left_region_boundary:
-                        left_fit.append((inclinacion, interseccion))
+                    if x1 < limite_izq and x2 < limite_izq:
+                        ajuste_izq.append((inclinacion, interseccion))
                         if abs(inclinacion) >0.09: #se corrige el problema de las líneas horizontales (amarilla segmentada)
-                            left_weights.append((length))
+                            ancho_izq.append((length))
                         else:
-                            left_weights.append((1)) #cuando es horizontal el peso es 1
+                            ancho_izq.append((1)) #cuando es horizontal el peso es 1
                 else:
-                    if x1 > right_region_boundary and x2 > right_region_boundary:
-                        right_fit.append((inclinacion, interseccion))
+                    if x1 > limite_der and x2 > limite_der:
+                        ajuste_der.append((inclinacion, interseccion))
                         if abs(inclinacion) >0.09:
-                            right_weights.append((length))
+                            ancho_der.append((length))
                         else:
-                            right_weights.append((1))
+                            ancho_der.append((1))
 
-        if len(left_fit) > 0:
-            left_fit_average = np.average(left_fit,weights=left_weights, axis=0)
-            lane_lines.append(make_points(left_fit_average, self.altura, self.ancho, self.altura_y, self.offset_y))
+        if len(ajuste_izq) > 0:
+            ajuste_izq_average = np.average(ajuste_izq,weights=ancho_izq, axis=0)
+            lineas_seguir.append(make_points(ajuste_izq_average, self.altura, self.ancho, self.altura_y, self.offset_y))
 
-        if len(right_fit) > 0:
-            right_fit_average = np.average(right_fit,weights=right_weights, axis=0)
-            lane_lines.append(make_points(right_fit_average, self.altura, self.ancho, self.altura_y, self.offset_y))
+        if len(ajuste_der) > 0:
+            ajuste_der_average = np.average(ajuste_der,weights=ancho_der, axis=0)
+            lineas_seguir.append(make_points(ajuste_der_average, self.altura, self.ancho, self.altura_y, self.offset_y))
 
-        return lane_lines
+        return lineas_seguir
     
 
     def display_lines(self, lines, line_color=(0, 255, 0), line_ancho=2):
@@ -289,28 +290,21 @@ direccion_angulo=-math.pi
 while True:
 
 
-    lane_pose = env.get_lane_pos2(env.cur_pos, env.cur_angle)
-    distance_to_road_center = lane_pose.dist
-    angulo_from_straight_in_rads = lane_pose.angle_rad
-
-    ###### Start changing the code here.
-    # TODO: Decide how to calculate the speed and direction.
+    pose_del_pato = env.get_lane_pos2(env.cur_pos, env.cur_angle)
+    distancia_de_manejo = pose_del_pato.dist
+    angulo_recto = pose_del_pato.angle_rad
 
     k_p = 10
     k_d = 1
-    
-    # The speed is a value between [0, 1] (which corresponds to a real speed between 0m/s and 1.2m/s)
-    
-    speed = 0.2 # TODO: You should overwrite this value
-    
-    # angulo of the steering wheel, which corresponds to the angular velocity in rad/s
-    steering = k_p*distance_to_road_center + k_d*angulo_from_straight_in_rads # TODO: You should overwrite this value
-    print("stering real : \n"+str(steering))
-    ###### No need to edit code below.
-    
+    speed = 0.2 
+
+    # angulo del volante, que corresponde a la velocidad angular en rad/s
+    direccion = k_p*distancia_de_manejo + k_d*angulo_recto
+    print("stering real : \n"+str(direccion))
+
     obs, reward, done, info = env.step([speed, direccion_angulo])
 
-    ### line detector
+    ### detectar lineas
     original = Image.fromarray(obs)
     cv_img = cv2.cvtColor(np.array(original), cv2.COLOR_RGB2BGR)
     hsv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
